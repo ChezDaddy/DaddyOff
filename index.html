@@ -520,8 +520,8 @@
 var SUPABASE_URL = "https://rthuuubrvitkbeskwgay.supabase.co";
 var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0aHV1dWJydml0a2Jlc2t3Z2F5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc1OTQyODgsImV4cCI6MjEwMzE3MDI4OH0.C1d1MxBvh5KKuBtELbDEG8sL1jLrSEGoq8pYLKStu3s";
 
-var APP_VERSION = "1.0.0";
-var BUILD_DATE = "27 août 2026";
+var APP_VERSION = "1.0.1";
+var BUILD_DATE = "17 septembre 2026";
 var PREFIX = "dof";
 
 function supabaseReady() {
@@ -536,7 +536,7 @@ var currentUser = null; // { email, role, salarieId, nom, prenom, estValideur }
 var DB = {
   salaries: [],   // { id, nom, prenom, dateEntree, dateSortie, valideurId, estValideur, dotationAnnuelle }
   absences: [],   // { id, valideurId, dateDebut, dateFin, backupValideurId }
-  demandes: [],   // { id, salarieId, dateDemande, dateDebut, dateFin, nbJours, typeAbsenceId, joursConges, joursSansSolde, motif, statut, valideurId, dateValidation, motifRefus }
+  demandes: [],   // { id, salarieId, dateDemande, dateDebut, dateFin, demiJourneeDebut, demiJourneeFin, nbJours, typeAbsenceId, joursConges, joursSansSolde, motif, statut, valideurId, dateValidation, motifRefus }
   ajustements: [], // { id, salarieId, anneeDebut, joursConges, joursSansSolde, commentaire, auteur, dateAjout } — compteurs de mois passés saisis manuellement par l'Admin
   config: { periodeDebutMois: 1, dotationDefaut: 25, typesAbsence: [{ id: 1, libelle: "Congés payés", compteurCP: true }, { id: 2, libelle: "Congés sans solde", compteurCP: false }] }
 };
@@ -644,6 +644,27 @@ function countJoursOuvres(dateDebutStr, dateFinStr) {
     cur.setDate(cur.getDate() + 1);
   }
   return n;
+}
+
+/* Un jour donné est-il un jour ouvré (ni week-end, ni jour férié) ? Sert à valider qu'une
+   demi-journée cochée en début/fin de période porte bien sur un jour réellement décompté. */
+function estJourOuvre(dateStr) {
+  var d = parseDate(dateStr);
+  if (!d) return false;
+  var feries = joursFeries(d.getFullYear());
+  var dow = d.getDay();
+  return dow !== 0 && dow !== 6 && !feries[fmtDate(d)];
+}
+
+/* Nombre de jours ouvrés décomptés pour une demande, avec prise en charge des demi-journées
+   en début et/ou fin de période (ex. arrivée le lundi après-midi, départ le vendredi matin).
+   Une demi-journée cochée sur un jour qui n'est de toute façon pas ouvré (week-end, férié)
+   n'a aucun effet — le jour n'était pas compté au départ. */
+function calculerNbJours(dateDebutStr, dateFinStr, demiDebut, demiFin) {
+  var nb = countJoursOuvres(dateDebutStr, dateFinStr);
+  if (demiDebut && estJourOuvre(dateDebutStr)) nb -= 0.5;
+  if (demiFin && estJourOuvre(dateFinStr)) nb -= 0.5;
+  return nb;
 }
 
 function listeFeriesDansPeriode(dateDebutStr, dateFinStr) {
@@ -1159,6 +1180,11 @@ function renderMesConges() {
     "  <div class='champ2'><label>Date de début</label><input type='date' id='mc-debut'></div>" +
     "  <div class='champ2'><label>Date de fin</label><input type='date' id='mc-fin'></div>" +
     "</div>" +
+    "<div style='margin-bottom:6px;'>" +
+    "  <div class='checkbox-ligne'><input type='checkbox' id='mc-demi-debut'><label for='mc-demi-debut' style='margin:0;cursor:pointer;'>Demi-journée en début de période (arrivée l'après-midi)</label></div>" +
+    "  <div class='checkbox-ligne'><input type='checkbox' id='mc-demi-fin'><label for='mc-demi-fin' style='margin:0;cursor:pointer;'>Demi-journée en fin de période (départ le matin)</label></div>" +
+    "</div>" +
+    "<div class='muted' style='font-size:11.5px;margin-bottom:16px;'>Pour une demi-journée sur un seul jour (date de début = date de fin), ne cochez qu'une seule des deux cases.</div>" +
     "<div class='champ2' style='margin-bottom:16px;max-width:340px;'><label>Type d'absence</label><select id='mc-type'>" + optsType + "</select></div>" +
     "<div class='champ2' style='margin-bottom:16px;'><label>Motif (facultatif, 50 caractères max)</label><input type='text' id='mc-motif' maxlength='50' placeholder='Ex. Vacances, rendez-vous médical…'></div>" +
     "<div id='mc-preview'></div>" +
@@ -1167,12 +1193,15 @@ function renderMesConges() {
 
   var debutEl = document.getElementById("mc-debut");
   var finEl = document.getElementById("mc-fin");
+  var demiDebutEl = document.getElementById("mc-demi-debut");
+  var demiFinEl = document.getElementById("mc-demi-fin");
   var typeEl = document.getElementById("mc-type");
   function maj() {
     var preview = document.getElementById("mc-preview");
     if (!debutEl.value || !finEl.value) { preview.innerHTML = ""; return; }
     if (finEl.value < debutEl.value) { preview.innerHTML = "<div class='err-box'>La date de fin doit être postérieure ou égale à la date de début.</div>"; return; }
-    var nb = countJoursOuvres(debutEl.value, finEl.value);
+    var nb = calculerNbJours(debutEl.value, finEl.value, demiDebutEl.checked, demiFinEl.checked);
+    if (nb <= 0) { preview.innerHTML = "<div class='err-box'>Cette période, avec les demi-journées cochées, ne représente aucun jour ouvré.</div>"; return; }
     var feries = listeFeriesDansPeriode(debutEl.value, finEl.value);
     var type = trouverTypeAbsence(parseInt(typeEl.value, 10));
     var html;
@@ -1197,6 +1226,8 @@ function renderMesConges() {
   }
   debutEl.addEventListener("change", maj);
   finEl.addEventListener("change", maj);
+  demiDebutEl.addEventListener("change", maj);
+  demiFinEl.addEventListener("change", maj);
   typeEl.addEventListener("change", maj);
 
   document.getElementById("mc-envoyer").addEventListener("click", function () {
@@ -1208,8 +1239,8 @@ function renderMesConges() {
       msg.innerHTML = "<div class='err-box'>Merci de saisir des dates valides.</div>";
       return;
     }
-    var nb = countJoursOuvres(debutEl.value, finEl.value);
-    if (nb <= 0) { msg.innerHTML = "<div class='err-box'>Cette période ne contient aucun jour ouvré.</div>"; return; }
+    var nb = calculerNbJours(debutEl.value, finEl.value, demiDebutEl.checked, demiFinEl.checked);
+    if (nb <= 0) { msg.innerHTML = "<div class='err-box'>Cette période, avec les demi-journées cochées, ne représente aucun jour ouvré.</div>"; return; }
     btnEl.disabled = true;
     var motif = document.getElementById("mc-motif").value.trim().slice(0, 50);
     var demande = {
@@ -1218,6 +1249,8 @@ function renderMesConges() {
       dateDemande: fmtDate(new Date()),
       dateDebut: debutEl.value,
       dateFin: finEl.value,
+      demiJourneeDebut: demiDebutEl.checked,
+      demiJourneeFin: demiFinEl.checked,
       nbJours: nb,
       typeAbsenceId: parseInt(typeEl.value, 10),
       motif: motif,
@@ -1231,7 +1264,7 @@ function renderMesConges() {
     DB.demandes.push(demande);
     persisterDemandes().then(function () {
       msg.innerHTML = "<div class='ok-box'>Demande envoyée. Elle apparaît maintenant dans votre historique en statut « en attente ».</div>";
-      debutEl.value = ""; finEl.value = ""; document.getElementById("mc-motif").value = "";
+      debutEl.value = ""; finEl.value = ""; demiDebutEl.checked = false; demiFinEl.checked = false; document.getElementById("mc-motif").value = "";
       btnEl.disabled = false;
       renderMesConges();
     }).catch(function () { btnEl.disabled = false; });
