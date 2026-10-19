@@ -484,7 +484,7 @@
       </div>
     </div>
 
-    <!-- ---- Export (admin + valideurs) ---- -->
+    <!-- ---- Export (admin, valideurs, export complet) ---- -->
     <div class="tab-content" id="tab-export">
       <div class="toolbar"><h2>Export des congés</h2></div>
       <div class="carte">
@@ -520,8 +520,8 @@
 var SUPABASE_URL = "https://rthuuubrvitkbeskwgay.supabase.co";
 var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0aHV1dWJydml0a2Jlc2t3Z2F5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc1OTQyODgsImV4cCI6MjEwMzE3MDI4OH0.C1d1MxBvh5KKuBtELbDEG8sL1jLrSEGoq8pYLKStu3s";
 
-var APP_VERSION = "1.0.1";
-var BUILD_DATE = "17 septembre 2026";
+var APP_VERSION = "1.1";
+var BUILD_DATE = "19 octobre 2026";
 var PREFIX = "dof";
 
 function supabaseReady() {
@@ -531,10 +531,10 @@ function supabaseReady() {
 /* ============================================================
    ETAT GLOBAL
    ============================================================ */
-var currentUser = null; // { email, role, salarieId, nom, prenom, estValideur }
+var currentUser = null; // { email, role, salarieId, nom, prenom, estValideur, exportComplet }
 
 var DB = {
-  salaries: [],   // { id, nom, prenom, dateEntree, dateSortie, valideurId, estValideur, dotationAnnuelle }
+  salaries: [],   // { id, nom, prenom, dateEntree, dateSortie, valideurId, estValideur, exportComplet, dotationAnnuelle }
   absences: [],   // { id, valideurId, dateDebut, dateFin, backupValideurId }
   demandes: [],   // { id, salarieId, dateDemande, dateDebut, dateFin, demiJourneeDebut, demiJourneeFin, nbJours, typeAbsenceId, joursConges, joursSansSolde, motif, statut, valideurId, dateValidation, motifRefus }
   ajustements: [], // { id, salarieId, anneeDebut, joursConges, joursSansSolde, commentaire, auteur, dateAjout } — compteurs de mois passés saisis manuellement par l'Admin
@@ -939,7 +939,8 @@ function doLogin() {
         salarieId: authRow.salarie_id || null,
         nom: salarie ? salarie.nom : "",
         prenom: salarie ? salarie.prenom : (authRow.role === "admin" ? "Finance" : ""),
-        estValideur: salarie ? !!salarie.estValideur : false
+        estValideur: salarie ? !!salarie.estValideur : false,
+        exportComplet: salarie ? !!salarie.exportComplet : false
       };
       sessionStorage.setItem(PREFIX + "_session", JSON.stringify(currentUser));
       afficherSpinner(false);
@@ -1089,6 +1090,12 @@ function fermerModal() {
    ============================================================ */
 var ONGLET_PAR_DEFAUT = "mes-conges";
 
+/* Export complet : toutes les demandes de tous les salariés (Admin d'office, ou salarié dont la
+   fiche porte la case « Export complet »). Sinon, un valideur n'exporte que son équipe. */
+function aExportComplet() {
+  return !!currentUser && (currentUser.role === "admin" || !!currentUser.exportComplet);
+}
+
 function definirOnglets() {
   var onglets = [{ id: "mes-conges", label: "Mes congés" }];
   if (currentUser.estValideur) onglets.push({ id: "a-valider", label: "À valider" });
@@ -1096,7 +1103,7 @@ function definirOnglets() {
     onglets.push({ id: "toutes-demandes", label: "Toutes les demandes" });
     onglets.push({ id: "salaries", label: "Salariés" });
   }
-  if (currentUser.role === "admin" || currentUser.estValideur) onglets.push({ id: "export", label: "Export" });
+  if (currentUser.role === "admin" || currentUser.estValideur || currentUser.exportComplet) onglets.push({ id: "export", label: "Export" });
   if (currentUser.role === "admin") onglets.push({ id: "config", label: "Configuration" });
   return onglets;
 }
@@ -1105,7 +1112,7 @@ function afficherApp() {
   document.getElementById("login-screen").style.display = "none";
   document.getElementById("app-screen").style.display = "flex";
   document.getElementById("hdr-nom").textContent = (currentUser.prenom + " " + currentUser.nom).trim() || currentUser.email;
-  document.getElementById("hdr-role").textContent = currentUser.role === "admin" ? "Admin" : (currentUser.estValideur ? "Salarié · Valideur" : "Salarié");
+  document.getElementById("hdr-role").textContent = currentUser.role === "admin" ? "Admin" : ((currentUser.estValideur ? "Salarié · Valideur" : "Salarié") + (currentUser.exportComplet ? " · Export complet" : ""));
   document.getElementById("footer-version").textContent = "v" + APP_VERSION + " · " + BUILD_DATE;
 
   var onglets = definirOnglets();
@@ -1722,6 +1729,7 @@ function ouvrirModalSalarie(id) {
     "<div class='champ2'><label>Forcer le nombre de jours pour la période en cours (remplace le calcul au prorata) — laisser vide pour laisser le calcul automatique</label><input type='number' step='0.25' id='f-dotation-forcee' value=\"" + (s && s.dotationForcee !== null && s.dotationForcee !== undefined ? s.dotationForcee : "") + "\"></div>" +
     (s && s.dotationForceePar ? "<div class='muted' style='margin:-10px 0 14px 0;'>Forcé par " + s.dotationForceePar + " le " + fmtDateFr(s.dotationForceeLe) + "</div>" : "") +
     "<div class='checkbox-ligne'><input type='checkbox' id='f-estvalideur'" + (s && s.estValideur ? " checked" : "") + "> <label for='f-estvalideur' style='margin:0;'>Ce salarié est valideur</label></div>" +
+    "<div class='checkbox-ligne'><input type='checkbox' id='f-exportcomplet'" + (s && s.exportComplet ? " checked" : "") + "> <label for='f-exportcomplet' style='margin:0;'>Export complet (peut exporter les demandes de tous les salariés)</label></div>" +
     "<div id='f-msg'></div>" +
     "<div class='modal-actions'>" +
     "  <button class='btn' id='f-annuler'>Annuler</button>" +
@@ -1741,6 +1749,7 @@ function ouvrirModalSalarie(id) {
     var dotationVal = document.getElementById("f-dotation").value;
     var dotationForceeVal = document.getElementById("f-dotation-forcee").value;
     var estValideur = document.getElementById("f-estvalideur").checked;
+    var exportComplet = document.getElementById("f-exportcomplet").checked;
     var msg = document.getElementById("f-msg");
     if (!nom || !prenom || !entree) { msg.innerHTML = "<div class='err-box'>Nom, prénom et date d'entrée sont obligatoires.</div>"; return; }
 
@@ -1757,6 +1766,7 @@ function ouvrirModalSalarie(id) {
       s.valideurId = valideurVal ? parseInt(valideurVal, 10) : null;
       s.dotationAnnuelle = dotationVal === "" ? null : parseFloat(dotationVal);
       s.estValideur = estValideur;
+      s.exportComplet = exportComplet;
       var ancienneValeurForcee = (s.dotationForcee !== null && s.dotationForcee !== undefined) ? s.dotationForcee : null;
       if (nouvelleValeurForcee !== ancienneValeurForcee) {
         s.dotationForcee = nouvelleValeurForcee;
@@ -1771,7 +1781,7 @@ function ouvrirModalSalarie(id) {
         dotationForcee: nouvelleValeurForcee,
         dotationForceePar: nouvelleValeurForcee !== null ? currentUser.email : null,
         dotationForceeLe: nouvelleValeurForcee !== null ? fmtDate(new Date()) : null,
-        estValideur: estValideur, appUserEmail: null
+        estValideur: estValideur, exportComplet: exportComplet, appUserEmail: null
       });
     }
     persisterSalaries().then(function () { fermerModal(); renderSalaries(); }).catch(function () { btnEl.disabled = false; });
@@ -1803,12 +1813,12 @@ function ouvrirModalCompte(id) {
   ouvrirModal(
     "<h3>Accès — " + s.nom + " " + s.prenom + "</h3>" +
     (aDejaCompte ? "<div class='info-box'>Identifiant actuel : " + s.appUserEmail + "</div>" : "") +
-    "<div class='champ2'><label>Email / identifiant</label><input id='c-email' value=\"" + (s.appUserEmail || "") + "\"" + (aDejaCompte ? " readonly" : "") + "></div>" +
-    "<div class='champ2'><label>" + (aDejaCompte ? "Nouveau mot de passe" : "Mot de passe initial") + "</label><input type='text' id='c-pwd' placeholder='Minimum 6 caractères'></div>" +
+    "<div class='champ2'><label>Email / identifiant" + (aDejaCompte ? " (modifiable)" : "") + "</label><input id='c-email' value=\"" + (s.appUserEmail || "") + "\"></div>" +
+    "<div class='champ2'><label>" + (aDejaCompte ? "Nouveau mot de passe — laisser vide pour ne changer que l'identifiant" : "Mot de passe initial") + "</label><input type='text' id='c-pwd' placeholder='Minimum 6 caractères'></div>" +
     "<div id='c-msg'></div>" +
     "<div class='modal-actions'>" +
     "  <button class='btn' id='c-annuler'>Annuler</button>" +
-    "  <button class='btn btn-rouge' id='c-valider'>" + (aDejaCompte ? "Réinitialiser le mot de passe" : "Créer l'accès") + "</button>" +
+    "  <button class='btn btn-rouge' id='c-valider'>" + (aDejaCompte ? "Enregistrer" : "Créer l'accès") + "</button>" +
     "</div>"
   );
   document.getElementById("c-annuler").addEventListener("click", fermerModal);
@@ -1818,21 +1828,59 @@ function ouvrirModalCompte(id) {
     var email = document.getElementById("c-email").value.trim();
     var pwd = document.getElementById("c-pwd").value;
     var msg = document.getElementById("c-msg");
-    if (!email || pwd.length < 6) { msg.innerHTML = "<div class='err-box'>Email valide et mot de passe d'au moins 6 caractères requis.</div>"; return; }
+    var ancienEmail = s.appUserEmail || null;
+    var changeLogin = aDejaCompte && email !== ancienEmail;
+    if (!email) { msg.innerHTML = "<div class='err-box'>Un identifiant est requis.</div>"; return; }
+    if (aDejaCompte) {
+      if (!changeLogin && pwd.length < 6) { msg.innerHTML = "<div class='err-box'>Saisissez un nouvel identifiant et/ou un mot de passe d'au moins 6 caractères.</div>"; return; }
+      if (pwd && pwd.length < 6) { msg.innerHTML = "<div class='err-box'>Le mot de passe doit comporter au moins 6 caractères.</div>"; return; }
+    } else if (pwd.length < 6) { msg.innerHTML = "<div class='err-box'>Email valide et mot de passe d'au moins 6 caractères requis.</div>"; return; }
+    if (changeLogin && DB.salaries.some(function (x) { return x.id !== s.id && x.appUserEmail === email; })) {
+      msg.innerHTML = "<div class='err-box'>Cet identifiant est déjà utilisé par un autre salarié.</div>"; return;
+    }
     btnEl.disabled = true;
-    hashPwd(pwd).then(function (h) {
+
+    /* Changement d'identifiant d'un accès existant : UPDATE ciblé sur app_users (jamais DELETE/INSERT),
+       après vérification que le nouvel identifiant n'existe pas déjà côté Supabase. */
+    var verifUnicite = (changeLogin && supabaseReady())
+      ? sbSelect("app_users", "email=eq." + encodeURIComponent(email) + "&select=id").then(function (rows) {
+          if (rows && rows.length) throw new Error("doublon");
+        })
+      : Promise.resolve();
+
+    verifUnicite.then(function () {
+      return pwd ? hashPwd(pwd) : Promise.resolve(null);
+    }).then(function (h) {
+      var patch = {};
+      if (changeLogin) patch.email = email;
+      if (h) patch.pwh = h;
+      var cibleEmail = aDejaCompte ? ancienEmail : email;
       var actionSb = aDejaCompte
-        ? (supabaseReady() ? sbUpdate("app_users", "email=eq." + encodeURIComponent(email), { pwh: h }) : Promise.resolve())
+        ? (supabaseReady() ? sbUpdate("app_users", "email=eq." + encodeURIComponent(cibleEmail), patch) : Promise.resolve())
         : (supabaseReady() ? sbInsert("app_users", [{ email: email, pwh: h, role: "salarie", salarie_id: s.id }]) : Promise.resolve());
-      return actionSb.catch(function () { /* mode local — on continue quand même */ }).then(function () {
-        updateUsersCache(email, h, "salarie", s.id);
+      return actionSb.catch(function (e) {
+        if (changeLogin) throw e; /* un renommage non confirmé par Supabase ne doit pas être enregistré */
+      }).then(function () {
+        var cache = getUsersCache();
+        var ancienneEntree = ancienEmail ? cache[ancienEmail] : null;
+        if (changeLogin && ancienEmail) {
+          delete cache[ancienEmail];
+          try { localStorage.setItem(PREFIX + "_users", JSON.stringify(cache)); } catch (e2) {}
+        }
+        var hashCache = h || (ancienneEntree ? ancienneEntree.h : null);
+        if (hashCache) updateUsersCache(email, hashCache, "salarie", s.id);
         s.appUserEmail = email;
         return persisterSalaries();
       });
     }).then(function () {
       fermerModal();
       renderAcces();
-    }).catch(function () { btnEl.disabled = false; });
+    }).catch(function (e) {
+      btnEl.disabled = false;
+      msg.innerHTML = "<div class='err-box'>" + (e && e.message === "doublon"
+        ? "Cet identifiant existe déjà dans la base."
+        : "Le changement d'identifiant n'a pas pu être enregistré (connexion Supabase). Réessayez.") + "</div>";
+    });
   });
 }
 
@@ -1845,10 +1893,11 @@ function renderAcces() {
   DB.salaries.slice().sort(function (a, b) { return a.nom.localeCompare(b.nom); }).forEach(function (s) {
     var tr = document.createElement("tr");
     var roleLabel = s.estValideur ? "<span class='badge badge-validee'>Valideur</span>" : "<span class='badge badge-annulee'>Salarié</span>";
+    if (s.exportComplet) roleLabel += " <span class='badge badge-attente' title='Peut exporter les demandes de tous les salariés'>Export complet</span>";
     var identifiant = s.appUserEmail ? s.appUserEmail : "<span class='muted'>—</span>";
     var statutAcces = s.appUserEmail ? "<span class='badge badge-validee'>Actif</span>" : "<span class='badge badge-attente'>Aucun accès</span>";
     var actionBtn = s.appUserEmail
-      ? "<button class='btn btn-petit' data-compte='" + s.id + "'>Réinitialiser le mot de passe</button>"
+      ? "<button class='btn btn-petit' data-compte='" + s.id + "'>Modifier l'accès</button>"
       : "<button class='btn btn-rouge btn-petit' data-compte='" + s.id + "'>Créer un accès</button>";
     tr.innerHTML =
       "<td>" + s.nom + "</td>" +
@@ -2161,7 +2210,7 @@ function renderExport() {
     var mois = parseInt(document.getElementById("exp-mois").value, 10);
 
     var perimetre = DB.demandes;
-    if (currentUser.role !== "admin") {
+    if (!aExportComplet()) {
       perimetre = perimetre.filter(function (d) {
         var sal = trouverSalarie(d.salarieId);
         return sal && sal.valideurId === currentUser.salarieId;
@@ -2286,7 +2335,7 @@ function init() {
     currentUser = sauvegarde;
     chargerToutesLesDonnees().then(function () {
       var salarie = currentUser.salarieId ? trouverSalarie(currentUser.salarieId) : null;
-      if (salarie) currentUser.estValideur = !!salarie.estValideur;
+      if (salarie) { currentUser.estValideur = !!salarie.estValideur; currentUser.exportComplet = !!salarie.exportComplet; }
       afficherSpinner(false);
       afficherApp();
       startKeepAlive();
