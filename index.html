@@ -409,6 +409,10 @@
     <div class="tab-content" id="tab-config">
       <div class="toolbar"><h2>Configuration</h2></div>
       <div class="carte">
+        <h3>Sécurité des données</h3>
+        <div id="cfg-secu"></div>
+      </div>
+      <div class="carte">
         <h3>Mon mot de passe</h3>
         <div id="cfg-monmdp-form"></div>
       </div>
@@ -520,8 +524,8 @@
 var SUPABASE_URL = "https://rthuuubrvitkbeskwgay.supabase.co";
 var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0aHV1dWJydml0a2Jlc2t3Z2F5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc1OTQyODgsImV4cCI6MjEwMzE3MDI4OH0.C1d1MxBvh5KKuBtELbDEG8sL1jLrSEGoq8pYLKStu3s";
 
-var APP_VERSION = "1.1";
-var BUILD_DATE = "19 octobre 2026";
+var APP_VERSION = "1.1.3";
+var BUILD_DATE = "22 octobre 2026";
 var PREFIX = "dof";
 
 function supabaseReady() {
@@ -968,23 +972,82 @@ function doLogout() {
 /* ============================================================
    CHARGEMENT / SAUVEGARDE DES DONNEES (jsonb, mutex)
    ============================================================ */
+/* v1.1.1 — Protection anti-écrasement.
+   _loadState[section] = { ok, rowId, count } mémorise ce qui a été LU en base (id de la ligne, nombre d'éléments).
+   Une sauvegarde n'est autorisée que si la section a été chargée correctement ET si la ligne en base n'a pas
+   changé depuis (sinon : refus + copie locale de sécurité, jamais d'écrasement silencieux). */
+var _loadState = {};
+var _alertesChargement = [];
+
+function compterElements(x) { return Array.isArray(x) ? x.length : -1; }
+
+function lireLocal(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
+
 function chargerSection(section, defaut) {
   var fbKey = PREFIX + "_fb_global_" + section;
   if (!supabaseReady()) {
-    try { var loc = JSON.parse(localStorage.getItem(fbKey)); if (loc) { DB[section] = loc; return Promise.resolve(); } } catch (e) {}
-    DB[section] = defaut;
+    _loadState[section] = { ok: true, rowId: null, count: 0, local: true };
+    var loc = lireLocal(fbKey);
+    DB[section] = loc ? loc : defaut;
     return Promise.resolve();
   }
-  return sbSelect(PREFIX + "_data", "site=eq.global&section=eq." + section + "&select=data").then(function (rows) {
-    if (rows && rows[0] && rows[0].data) {
-      DB[section] = rows[0].data;
+  return sbSelect(PREFIX + "_data", "site=eq.global&section=eq." + section + "&select=id,data&order=id.desc&limit=1").then(function (rows) {
+    var row = rows && rows[0];
+    var precedent = lireLocal(fbKey);
+    if (row && row.data) {
+      DB[section] = row.data;
+      _loadState[section] = { ok: true, rowId: row.id, count: compterElements(row.data) };
     } else {
       DB[section] = defaut;
+      _loadState[section] = { ok: true, rowId: null, count: compterElements(defaut) };
+    }
+    /* La base contient nettement moins d'éléments que la dernière copie locale de ce poste : on garde cette copie à part */
+    var nPrec = compterElements(precedent), nBase = compterElements(DB[section]);
+    if (nPrec >= 0 && nBase >= 0 && nPrec - nBase >= 2) {
+      var oldKey = fbKey + "_old", exist = lireLocal(oldKey);
+      if (!exist || compterElements(exist) < nPrec) { try { localStorage.setItem(oldKey, JSON.stringify(precedent)); } catch (e) {} }
+      _alertesChargement.push(section + " : la base contient " + nBase + " élément(s) alors que ce poste en avait " + nPrec + " à la dernière connexion.");
     }
     try { localStorage.setItem(fbKey, JSON.stringify(DB[section])); } catch (e) {}
   }).catch(function () {
-    try { var loc2 = JSON.parse(localStorage.getItem(fbKey)); DB[section] = loc2 || defaut; } catch (e) { DB[section] = defaut; }
+    _loadState[section] = { ok: false, rowId: null, count: 0 };
+    var loc2 = lireLocal(fbKey);
+    DB[section] = loc2 ? loc2 : defaut;
   });
+}
+
+/* Vrai si au moins une section n'a pas pu être lue en base : l'appli passe en lecture seule */
+function chargementIncomplet() {
+  return Object.keys(_loadState).some(function (k) { return !_loadState[k].ok; });
+}
+
+/* Écran bloquant (non fermable) : message + bouton « Recharger » */
+function bloquerApp(titre, texte) {
+  var el = document.getElementById("bloc-overlay");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "bloc-overlay";
+    el.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;";
+    document.body.appendChild(el);
+  }
+  el.innerHTML = "<div style=\"background:#fff;max-width:480px;width:100%;border-radius:8px;padding:24px;box-shadow:0 4px 24px rgba(0,0,0,.3);font-family:Calibri,sans-serif;font-size:14px;\">" +
+    "<div style=\"font-size:18px;font-weight:bold;color:#B7242B;margin-bottom:12px;\">" + titre + "</div>" +
+    "<div style=\"line-height:1.5;margin-bottom:16px;\">" + texte + "</div>" +
+    "<button class=\"btn-principal\" onclick=\"location.reload()\">Recharger la page</button></div>";
+  el.style.display = "flex";
+}
+
+/* Bandeau d'avertissement non bloquant, en haut de page */
+function afficherBandeau(texte, rouge) {
+  var el = document.getElementById("bandeau-alerte");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "bandeau-alerte";
+    document.body.appendChild(el);
+  }
+  el.style.cssText = "position:fixed;bottom:0;left:0;right:0;z-index:9000;padding:10px 16px;font-family:Calibri,sans-serif;font-size:14px;color:#fff;text-align:center;background:" + (rouge ? "#B7242B" : "#E59E00") + ";";
+  el.textContent = texte;
+  el.style.display = "block";
 }
 
 var TYPES_ABSENCE_DEFAUT = [
@@ -1031,14 +1094,40 @@ function chargerToutesLesDonnees() {
   });
 }
 
+function sauvegardeSecours(section, data, motif) {
+  try { localStorage.setItem(PREFIX + "_unsaved_" + section + "_" + Date.now() + "_" + motif, JSON.stringify(data)); } catch (e) {}
+}
+
+function gererRefus(section, motif, data) {
+  sauvegardeSecours(section, data, motif);
+  if (motif === "conflit") {
+    bloquerApp("Enregistrement refusé par sécurité",
+      "Les données ont été modifiées par quelqu'un d'autre (ou depuis un autre onglet) depuis l'ouverture de cette page. " +
+      "Pour ne rien écraser, ta dernière modification n'a <b>pas</b> été enregistrée.<br><br>Recharge la page puis refais ta saisie.");
+  } else if (motif === "reduction") {
+    bloquerApp("Enregistrement refusé par sécurité",
+      "Cette opération aurait fait disparaître une grande partie des données (" + section + "). Elle a été bloquée.<br><br>" +
+      "Recharge la page. Si cette suppression est volontaire, contacte l'administrateur.");
+  } else {
+    bloquerApp("Lecture seule : connexion à la base impossible",
+      "Les données de cette session n'ont pas pu être lues en base (réseau ou délai dépassé). Pour ne rien écraser, l'enregistrement est désactivé.<br><br>" +
+      "Recharge la page quand la connexion est rétablie.");
+  }
+}
+
 function saveData(section, data) {
   var key = "global_" + section;
   _memCache.set(key, data);
   try { localStorage.setItem(PREFIX + "_fb_" + key, JSON.stringify(data)); } catch (e) {}
   if (_saveLocks.has(key)) { _savePending.set(key, data); return Promise.resolve(); }
   _saveLocks.add(key);
-  return doSaveSupabase(section, data).then(function () {
+  return doSaveSupabase(section, data).then(function (r) {
     _saveLocks.delete(key);
+    if (r && r.refus) {
+      _savePending.delete(key);
+      gererRefus(section, r.refus, data);
+      return;
+    }
     if (_savePending.has(key)) {
       var pending = _savePending.get(key);
       _savePending.delete(key);
@@ -1046,13 +1135,61 @@ function saveData(section, data) {
     }
   }).catch(function () {
     _saveLocks.delete(key);
+    sauvegardeSecours(section, data, "reseau");
+    afficherBandeau("Enregistrement NON confirmé (réseau). Ne ferme pas la page : refais l'action dans un instant et vérifie qu'elle est bien prise en compte.", true);
   });
 }
 
+/* Écriture en base : vérifications avant DELETE puis INSERT (avec nouvelles tentatives sur l'INSERT) */
 function doSaveSupabase(section, data) {
-  if (!supabaseReady()) return Promise.resolve();
-  return sbDelete(PREFIX + "_data", "site=eq.global&section=eq." + section).then(function () {
-    return sbInsert(PREFIX + "_data", [{ site: "global", section: section, data: data }]);
+  if (!supabaseReady()) return Promise.resolve({ ok: true });
+  var st = _loadState[section];
+  if (!st || !st.ok) return Promise.resolve({ refus: "noload" });
+  var q = "site=eq.global&section=eq." + section;
+  return sbSelect(PREFIX + "_data", q + "&select=id&order=id.desc&limit=1").then(function (rows) {
+    var cur = rows && rows[0] ? rows[0].id : null;
+    if (cur !== st.rowId) return { refus: "conflit" };
+    var n = compterElements(data);
+    if (n >= 0 && st.count >= 2 && (n === 0 || (st.count >= 4 && n < st.count / 2))) return { refus: "reduction" };
+    return ecrireSection(section, data, q).then(function (newId) {
+      st.rowId = newId;
+      st.count = n;
+      return { ok: true };
+    });
+  });
+}
+
+/* v1.1.2 — Écriture « insérer d'abord, supprimer l'ancienne ensuite » : il n'existe jamais de moment où la base
+   n'a plus de ligne pour la section (hypothèse retenue pour la perte d'octobre 2026 : coupure entre DELETE et INSERT).
+   Si l'INSERT échoue, l'ancienne ligne reste intacte. Si la suppression de l'ancienne échoue, deux lignes
+   coexistent un instant, sans gravité : le chargement lit toujours la plus récente (id décroissant).
+   Repli sur l'ancienne méthode (DELETE puis INSERT) uniquement si la table refuse deux lignes (erreur 409). */
+function ecrireSection(section, data, q) {
+  return insererAvecReprise(section, data, 3).then(function (res) {
+    var newId = res && res[0] && res[0].id !== undefined ? res[0].id : null;
+    var idP = newId !== null ? Promise.resolve(newId) :
+      sbSelect(PREFIX + "_data", q + "&select=id&order=id.desc&limit=1").then(function (r) { return r && r[0] ? r[0].id : null; });
+    return idP.then(function (id) {
+      if (id === null) return null;
+      return sbDelete(PREFIX + "_data", q + "&id=neq." + encodeURIComponent(id)).catch(function () {}).then(function () { return id; });
+    });
+  }, function (e) {
+    if (e && /HTTP 409/.test(String(e.message))) {
+      /* contrainte d'unicité : ancienne méthode, avec reprise de l'INSERT */
+      return sbDelete(PREFIX + "_data", q).then(function () {
+        return insererAvecReprise(section, data, 3);
+      }).then(function (res2) { return res2 && res2[0] && res2[0].id !== undefined ? res2[0].id : null; });
+    }
+    throw e;
+  });
+}
+
+function insererAvecReprise(section, data, essais) {
+  return sbInsert(PREFIX + "_data", [{ site: "global", section: section, data: data }]).catch(function (e) {
+    if (essais <= 1) throw e;
+    return new Promise(function (resolve) { setTimeout(resolve, 800); }).then(function () {
+      return insererAvecReprise(section, data, essais - 1);
+    });
   });
 }
 
@@ -1127,6 +1264,11 @@ function afficherApp() {
     barre.appendChild(btn);
   });
   afficherOnglet(ONGLET_PAR_DEFAUT);
+  if (chargementIncomplet()) {
+    afficherBandeau("Lecture seule : les données n'ont pas pu être lues en base. Recharge la page quand la connexion est rétablie.", true);
+  } else if (_alertesChargement.length && currentUser.role === "admin") {
+    afficherBandeau("Attention : " + _alertesChargement.join(" ") + " Une copie locale a été conservée (Configuration > Sécurité des données).", false);
+  }
 }
 
 function afficherOnglet(id) {
@@ -1917,7 +2059,62 @@ function renderAcces() {
 /* ============================================================
    ONGLET ADMIN : CONFIGURATION
    ============================================================ */
+function telechargerJson(nom, obj) {
+  var blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = nom;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+
+/* Copies locales de sécurité conservées sur ce poste (refus d'enregistrement, base moins fournie que prévu) */
+function listerCopiesSecours() {
+  var res = [];
+  try {
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (k.indexOf(PREFIX + "_unsaved_") === 0 || /_fb_global_[a-z]+_old$/.test(k)) {
+        var v = lireLocal(k);
+        res.push({ cle: k, n: compterElements(v), valeur: v });
+      }
+    }
+  } catch (e) {}
+  return res;
+}
+
+function renderSecuriteDonnees() {
+  var el = document.getElementById("cfg-secu");
+  var copies = listerCopiesSecours();
+  var h = "<p>Le plan gratuit de la base ne fait <b>aucune sauvegarde automatique</b> : télécharge régulièrement une sauvegarde complète (une fois par semaine par exemple).</p>" +
+    "<button class='btn btn-rouge' id='cfg-secu-dl'>Télécharger une sauvegarde complète (JSON)</button>";
+  if (copies.length) {
+    h += "<p style='margin-top:14px;'><b>Copies de sécurité conservées sur ce poste</b> (à transmettre au support en cas de perte de données) :</p><ul>";
+    copies.forEach(function (c, i) {
+      h += "<li>" + c.cle.replace(PREFIX + "_", "") + " — " + (c.n >= 0 ? c.n + " élément(s)" : "données") + " <button class='btn' data-i='" + i + "'>Télécharger</button></li>";
+    });
+    h += "</ul>";
+  }
+  el.innerHTML = h;
+  document.getElementById("cfg-secu-dl").addEventListener("click", function () {
+    var d = new Date();
+    var stamp = d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
+    telechargerJson("DaddyOff_sauvegarde_" + stamp + ".json", {
+      version: APP_VERSION, date: d.toISOString(),
+      salaries: DB.salaries, absences: DB.absences, demandes: DB.demandes, ajustements: DB.ajustements, config: DB.config
+    });
+  });
+  Array.prototype.forEach.call(el.querySelectorAll("button[data-i]"), function (b) {
+    b.addEventListener("click", function () {
+      var c = copies[parseInt(b.getAttribute("data-i"), 10)];
+      telechargerJson(c.cle.replace(PREFIX + "_", "") + ".json", c.valeur);
+    });
+  });
+}
+
 function renderConfig() {
+  renderSecuriteDonnees();
   document.getElementById("cfg-monmdp-form").innerHTML =
     "<div class='ligne'>" +
     "  <div class='champ2' style='max-width:280px;'><label>Nouveau mot de passe</label><input type='password' id='cfg-monmdp-val' placeholder='Minimum 6 caractères'></div>" +
@@ -2241,7 +2438,9 @@ function renderExport() {
 
     if (!lignes.length) { alert("Aucune demande ne correspond à cette période."); return; }
     var csv = buildCSV(lignes);
-    var nomFichier = "DaddyOff_" + (type === "mensuel" ? pad2(mois) + "-" + annee : annee) + ".csv";
+    var auj = new Date();
+    var dateExtraction = auj.getFullYear() + " " + pad2(auj.getMonth() + 1) + " " + pad2(auj.getDate());
+    var nomFichier = "DaddyOff_" + (type === "mensuel" ? pad2(mois) + "-" + annee : annee) + "_" + dateExtraction + ".csv";
     downloadCSV(nomFichier, csv);
   });
 }
